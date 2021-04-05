@@ -188,8 +188,11 @@ class MainWindow(Gtk.Window):
         self.button_save = ButtonWithIcon("Save", "document-save")
         self.button_save.connect("clicked", self.on_save_clicked)
 
-        self.button_add = ButtonWithIcon("New bookmark", "add")
+        self.button_add = ButtonWithIcon("New bookmark", "list-add")
         self.button_add.connect("clicked", self.on_add_clicked)
+
+        self.button_remove = ButtonWithIcon("Remove bookmark", "list-remove")
+        self.button_remove.connect("clicked", self.on_remove_clicked)
 
         self.paned = Gtk.Paned()
         self.paned.set_orientation(Gtk.Orientation.HORIZONTAL)
@@ -214,6 +217,7 @@ class MainWindow(Gtk.Window):
         self.remove(self.empty_label)
         self.add(self.paned)
         self.header_bar.pack_start(self.button_add)
+        self.header_bar.pack_start(self.button_remove)
         self.header_bar.pack_start(self.button_save)
         self.header_bar.pack_start(self.button_save_as)
         self.pdf_loaded = True
@@ -271,6 +275,11 @@ class MainWindow(Gtk.Window):
 
     def on_add_clicked(self, widget):
         self.pdftk.bookmark_store.append(None, ("<NEW_BOOKMARK>", 1))
+        self.bookmark_view.show_all()
+
+    def on_remove_clicked(self, widget):
+        model, treeiter = self.bookmark_view.get_selection().get_selected()
+        self.pdftk.bookmark_store.remove(treeiter)
         self.bookmark_view.show_all()
              
     def add_filters(self, dialog):
