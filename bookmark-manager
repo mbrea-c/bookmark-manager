@@ -2,10 +2,53 @@
 
 from functools import reduce
 import subprocess
+import psutil
+import dbus
+import tempfile
+import os
+import shutil
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gio, GObject
 
+class ZathuraLink:
+    def __init__(self, filename):
+        self.filename = filename
+        self.instance_pid = None
+        self.instance_iface = None
+        self.session_bus = dbus.SessionBus()
+        self.find_instance()
+
+    def find_instance(self):
+        candidates = filter(\
+                lambda p: p.name().find('zathura') != -1,\
+                psutil.process_iter())
+        for p in candidates:
+            dbus_obj = self.session_bus.get_object(\
+                    f'org.pwmt.zathura.PID-{p.pid}',\
+                    '/org/pwmt/zathura')
+            dbus_iface = dbus.Interface(dbus_obj, dbus_interface='org.freedesktop.DBus.Properties')
+            found_filename = str(dbus_iface.Get('org.pwmt.zathura', "filename"))
+            if self.filename == found_filename:
+                print("Zathura instance found!")
+                self.instance_pid = p.pid
+                self.instance_iface = dbus_iface
+
+    def get_page(self):
+        if self.instance_pid is None:
+            self.find_instance()
+        if self.instance_pid is not None:
+            return int(self.instance_iface.Get('org.pwmt.zathura', "pagenumber")) + 1
+        else:
+            return -1
+
+    def set_filename(self, filename):
+        self.filename = filename
+        self.instance_pid = None
+        self.instance_iface = None
+        self.find_instance()
+        
+    
 class Bookmark:
     def __init__(self, lines):
         self.title = lines[0].split(sep=':', maxsplit=1)[1][1:]
@@ -78,51 +121,43 @@ class PdfTk:
         self.bookmark_store = BookmarkStore(bookmarks)
 
     def save_as(self, new_filename):
-        process = subprocess.Popen(["pdftk", self.filename, "update_info_utf8", "-", "output", new_filename],\
-                stdin=subprocess.PIPE)
-        add_str = lambda a,b: a + "\n" + b
-        full_metadata = reduce(add_str, self.metadata_pre, "") + \
-                self.bookmark_store.to_string() + \
-                reduce(add_str, self.metadata_post, "")
-        process.communicate(input=full_metadata.encode('UTF-8'))
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        try:
+            temp_file.close()
+            process = subprocess.Popen(["pdftk", self.filename, "update_info_utf8", "-", "output", temp_file.name],\
+                    stdin=subprocess.PIPE)
+            add_str = lambda a,b: a + "\n" + b
+            full_metadata = reduce(add_str, self.metadata_pre, "") + \
+                    self.bookmark_store.to_string() + \
+                    reduce(add_str, self.metadata_post, "")
+            process.communicate(input=full_metadata.encode('UTF-8'))
+            shutil.copy2(temp_file.name, new_filename) 
+        finally:
+            os.remove(temp_file.name)
 
-
-
-
-class BookmarkListRow(Gtk.ListBoxRow):
-    def __init__(self, bookmark: Bookmark):
-        Gtk.ListBoxRow.__init__(self)
-        self.bookmark = bookmark
-        self.label = Gtk.Label(label=bookmark.title)
-        self.add(self.label)
-        self.bookmark.connect("modified", self.on_bookmark_modified)
-
-    def on_bookmark_modified(self, bookmark):
-        self.label.set_label(self.bookmark.title)
-        
-
-class BookmarkEditBox(Gtk.Box):
-    def __init__(self, bookmark_store: BookmarkStore, store_view: Gtk.TreeView):
-        Gtk.Box.__init__(self, orientation = Gtk.Orientation.VERTICAL)
+class BookmarkEditBox(Gtk.Grid):
+    def __init__(self, bookmark_store: BookmarkStore, store_view: Gtk.TreeView, zathura_link: ZathuraLink):
+        Gtk.Grid.__init__(self)
+        self.set_column_spacing(5)
+        self.set_row_spacing(5)
         self.bookmark_store = bookmark_store
+        self.zathura_link = zathura_link
         self.store_view = store_view
         self.selection = store_view.get_selection()
         self.selection.connect("changed", self.on_change_bookmark)
 
         self.empty_label = Gtk.Label(label="No bookmark selected")
 
-        self.title_box = Gtk.Box()
+        self.title_label = Gtk.Label(label="Title:")
         self.title_entry = Gtk.Entry()
-        self.title_entry.connect("activate", self.on_activate_title)
-        self.title_box.pack_start(Gtk.Label(label="Title:"), True, True, 0) 
-        self.title_box.pack_start(self.title_entry, True, True, 0)
+        self.title_entry.connect("changed", self.on_activate_title)
 
-        self.page_box = Gtk.Box()
+        self.page_label = Gtk.Label(label="Page number:")
         self.page_entry = Gtk.Entry()
         self.page_entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
-        self.page_entry.connect("activate", self.on_activate_page)
-        self.page_box.pack_start(Gtk.Label(label="Page number:"), True, True, 0) 
-        self.page_box.pack_start(self.page_entry, True, True, 0)
+        self.page_entry.connect("changed", self.on_activate_page)
+        self.button_sync = ButtonWithIcon('From Zathura', 'view-refresh')
+        self.button_sync.connect('clicked', self.on_sync_click)
 
         self.add(self.empty_label)
 
@@ -138,24 +173,31 @@ class BookmarkEditBox(Gtk.Box):
     def on_change_bookmark(self, selection):
         self.clear_children()
         model, treeiter = self.selection.get_selected()
-        if self.bookmark_store is None or self.selection is None:
-            self.pack_start(self.empty_label, True, True, 0)
+
+        if model is None or treeiter is None:
+            self.attach(self.empty_label, 0, 0, 3,2)
         else:
-            self.pack_start(self.title_box, False, False, 0)
-            self.pack_start(self.page_box, False, False, 0)
+            self.attach(self.title_label, 0, 0, 1, 1)
+            self.attach(self.title_entry, 1, 0, 2, 1)
+            self.attach(self.page_label, 0, 1, 1, 1)
+            self.attach(self.page_entry, 1, 1, 1, 1)
+            self.attach(self.button_sync, 2, 1, 1, 1)
 
             self.title_entry.set_text(self.bookmark_store[treeiter][0])
             self.page_entry.set_text(str(self.bookmark_store[treeiter][1]))
 
         self.show_all()
 
+    def on_sync_click(self, button):
+        self.page_entry.set_text(str(self.zathura_link.get_page()))
+
     def on_activate_title(self, entry):
         model, treeiter = self.selection.get_selected()
-        self.bookmark_store[treeiter][0] = self.title_entry.get_text()
+        model[treeiter][0] = self.title_entry.get_text()
 
     def on_activate_page(self, entry):
         model, treeiter = self.selection.get_selected()
-        self.bookmark_store[treeiter][1] = self.page_entry.get_text()
+        model[treeiter][1] = int(self.page_entry.get_text())
 
 class ButtonWithIcon(Gtk.Button):
     def __init__(self, label_text, icon_name):
@@ -171,9 +213,12 @@ class ButtonWithIcon(Gtk.Button):
 class MainWindow(Gtk.Window):
     def __init__(self):
         Gtk.Window.__init__(self, title="Bookmark Editor")
+        self.set_default_size(800, 600)
 
         self.pdftk = None
         self.pdf_loaded = False
+
+        self.zathura_link = ZathuraLink('')
 
         self.header_bar = Gtk.HeaderBar()
         self.set_titlebar(self.header_bar)
@@ -194,6 +239,9 @@ class MainWindow(Gtk.Window):
         self.button_remove = ButtonWithIcon("Remove bookmark", "list-remove")
         self.button_remove.connect("clicked", self.on_remove_clicked)
 
+        self.button_zathura = ButtonWithIcon("Open in Zathura", "document-send")
+        self.button_zathura.connect("clicked", self.on_zathura_clicked)
+
         self.paned = Gtk.Paned()
         self.paned.set_orientation(Gtk.Orientation.HORIZONTAL)
 
@@ -205,7 +253,7 @@ class MainWindow(Gtk.Window):
 
         self.paned.add1(self.bookmark_view)
         
-        self.bookmark_edit_box = BookmarkEditBox(None, self.bookmark_view)
+        self.bookmark_edit_box = BookmarkEditBox(None, self.bookmark_view, self.zathura_link)
         self.paned.add2(self.bookmark_edit_box)
 
         self.empty_label = Gtk.Label(label="No PDF file loaded")
@@ -218,6 +266,7 @@ class MainWindow(Gtk.Window):
         self.add(self.paned)
         self.header_bar.pack_start(self.button_add)
         self.header_bar.pack_start(self.button_remove)
+        self.header_bar.pack_start(self.button_zathura)
         self.header_bar.pack_start(self.button_save)
         self.header_bar.pack_start(self.button_save_as)
         self.pdf_loaded = True
@@ -225,43 +274,39 @@ class MainWindow(Gtk.Window):
     def on_pdf_loaded(self):
         self.bookmark_view.set_model(self.pdftk.bookmark_store)
         self.bookmark_edit_box.set_store(self.pdftk.bookmark_store)
+        self.zathura_link.set_filename(self.pdftk.filename)
         self.bookmark_view.show_all()
         self.show_all()
 
-
     def on_open_clicked(self, widget):
         dialog = Gtk.FileChooserDialog(
-            title="Please choose a PDF file", parent=self, action=Gtk.FileChooserAction.OPEN
-        )
+            title="Please choose a PDF file", parent=self, action=Gtk.FileChooserAction.OPEN)
         dialog.add_buttons(
             Gtk.STOCK_CANCEL,
             Gtk.ResponseType.CANCEL,
             Gtk.STOCK_OPEN,
-            Gtk.ResponseType.OK,
-        )
+            Gtk.ResponseType.OK)
 
         self.add_filters(dialog)
 
         response = dialog.run()
         if response == Gtk.ResponseType.OK:
             self.pdftk = PdfTk(dialog.get_filename())
+            if not self.pdf_loaded:
+                self.on_pdf_first_loaded()
+            self.on_pdf_loaded()
 
-        if not self.pdf_loaded:
-            self.on_pdf_first_loaded()
-        self.on_pdf_loaded()
         dialog.destroy()
 
     def on_save_as_clicked(self, widget):
         dialog = Gtk.FileChooserDialog(
-            title="Please choose a PDF file", parent=self, action=Gtk.FileChooserAction.SAVE
-        )
+            title="Please choose a PDF file", parent=self, action=Gtk.FileChooserAction.SAVE)
         dialog.set_filename(self.pdftk.filename)
         dialog.add_buttons(
             Gtk.STOCK_CANCEL,
             Gtk.ResponseType.CANCEL,
             Gtk.STOCK_OPEN,
-            Gtk.ResponseType.OK,
-        )
+            Gtk.ResponseType.OK)
 
         self.add_filters(dialog)
 
@@ -279,14 +324,18 @@ class MainWindow(Gtk.Window):
 
     def on_remove_clicked(self, widget):
         model, treeiter = self.bookmark_view.get_selection().get_selected()
-        self.pdftk.bookmark_store.remove(treeiter)
+        model.remove(treeiter)
         self.bookmark_view.show_all()
+
+    def on_zathura_clicked(self, widget):
+        subprocess.Popen(["zathura", self.pdftk.filename])
              
     def add_filters(self, dialog):
         filter_pdf = Gtk.FileFilter()
         filter_pdf.set_name("PDF files")
         filter_pdf.add_mime_type("application/pdf")
         dialog.add_filter(filter_pdf)
+
 
 win = MainWindow()
 win.connect("destroy", Gtk.main_quit)
