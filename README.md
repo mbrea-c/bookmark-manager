@@ -1,5 +1,5 @@
 # bookmark-manager
-A simple PDF bookmark (table of contents) manager, with optional zathura integration.
+A simple GTK+3 PDF bookmark (table of contents) manager, with optional zathura integration.
 
 ## Dependencies
  - Python 3
