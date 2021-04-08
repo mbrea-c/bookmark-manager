@@ -336,8 +336,8 @@ class MainWindow(Gtk.Window):
         filter_pdf.add_mime_type("application/pdf")
         dialog.add_filter(filter_pdf)
 
-
-win = MainWindow()
-win.connect("destroy", Gtk.main_quit)
-win.show_all()
-Gtk.main()
+def main():
+    win = MainWindow()
+    win.connect("destroy", Gtk.main_quit)
+    win.show_all()
+    Gtk.main()

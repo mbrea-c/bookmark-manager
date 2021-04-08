@@ -1,1 +1,6 @@
 .vim
+build
+dist
+api_token_copy.sh
+src/pdf_bookmark_manager.egg-info
+src/pdf_bookmark_manager_mbreac.egg-info
